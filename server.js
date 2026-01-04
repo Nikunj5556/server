@@ -93,8 +93,43 @@ app.post('/upload', upload.single('image'), async (req, res) => {
   }
 });
 
+// ... existing imports and upload code ...
+
+// NEW: Download Endpoint
+app.get('/download', async (req, res) => {
+  try {
+    const filePath = req.query.path; // Frontend sends: "uploads/filename.png"
+
+    if (!filePath) {
+      return res.status(400).send('File path is required');
+    }
+
+    const file = bucket.file(filePath);
+    const [exists] = await file.exists();
+
+    if (!exists) {
+      return res.status(404).send('File not found');
+    }
+
+    // This header tells the browser: "Don't open this, DOWNLOAD it"
+    // We extract just the filename (e.g., image.png) from the full path
+    const fileName = filePath.split('/').pop(); 
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    
+    // Pipe the file directly from Google Cloud to the user
+    file.createReadStream().pipe(res);
+
+  } catch (error) {
+    console.error('Download error:', error);
+    res.status(500).send('Error downloading file');
+  }
+});
+
+// app.listen(...)
+
 // Cloud Run requires listening on process.env.PORT
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
+
 });
