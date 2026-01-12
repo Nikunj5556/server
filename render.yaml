@@ -1,1 +1,17 @@
-
+services:
+  - type: web
+    name: movieoo-server
+    runtime: docker
+    plan: free
+    region: frankfurt # This is the closest Render region to Stockholm
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: AWS_REGION
+        value: eu-north-1
+      - key: AWS_BUCKET_NAME
+        value: movieoo
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
