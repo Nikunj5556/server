@@ -1,15 +1,19 @@
 const express = require('express');
 const multer = require('multer');
-const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const cors = require('cors');
-const axios = require('axios'); // For easy streaming of the download
+const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
+// Render automatically provides a PORT environment variable
 const port = process.env.PORT || 3000;
 
-app.use(cors());
-app.use(express.json());
+// CORS setup to allow your main site to contact this server
+app.use(cors({
+    origin: '*', // Change this to your main site URL (e.g., https://mysite.com) for security
+    methods: ['GET', 'POST']
+}));
 
 const s3Client = new S3Client({
     region: process.env.AWS_REGION,
@@ -19,63 +23,42 @@ const s3Client = new S3Client({
     }
 });
 
-const storage = multer.memoryStorage();
-const upload = multer({ storage: storage });
+const upload = multer({ storage: multer.memoryStorage() });
 
-// --- UPLOAD ENDPOINT ---
+// Health check for Render
+app.get('/', (req, res) => res.send('Server is live!'));
+
+// --- UPLOAD ---
 app.post('/upload', upload.single('file'), async (req, res) => {
     try {
-        if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+        if (!req.file) return res.status(400).json({ error: 'No file' });
 
-        const fileName = `${Date.now()}_${req.file.originalname}`;
-        const bucketName = process.env.AWS_BUCKET_NAME;
-
-        const uploadParams = {
-            Bucket: bucketName,
+        const fileName = `${Date.now()}-${req.file.originalname}`;
+        await s3Client.send(new PutObjectCommand({
+            Bucket: process.env.AWS_BUCKET_NAME,
             Key: fileName,
             Body: req.file.buffer,
             ContentType: req.file.mimetype
-        };
+        }));
 
-        await s3Client.send(new PutObjectCommand(uploadParams));
-
-        const publicUrl = `https://${bucketName}.s3.${process.env.AWS_REGION}.amazonaws.com/${fileName}`;
-
-        res.status(200).json({
-            message: 'Uploaded to S3',
-            url: publicUrl,
-            fileName: fileName
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+        const publicUrl = `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${fileName}`;
+        res.status(200).json({ url: publicUrl });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 });
 
-// --- DOWNLOAD/PROXY ENDPOINT ---
-// Your site sends: /download?url=https://movieoo.s3...
+// --- DOWNLOAD (Proxy) ---
 app.get('/download', async (req, res) => {
     try {
         const fileUrl = req.query.url;
-        if (!fileUrl) return res.status(400).send('URL is required');
-
-        // Extract filename from URL for the download header
         const fileName = fileUrl.split('/').pop();
-
-        const response = await axios({
-            url: fileUrl,
-            method: 'GET',
-            responseType: 'stream'
-        });
-
-        // Set headers so the browser downloads the file instead of playing/opening it
+        const response = await axios({ url: fileUrl, method: 'GET', responseType: 'stream' });
+        
         res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-        res.setHeader('Content-Type', response.headers['content-type']);
-
-        // Pipe the S3 data directly to the user
         response.data.pipe(res);
-    } catch (error) {
-        console.error('Download error:', error.message);
-        res.status(500).send('Error downloading file');
+    } catch (e) {
+        res.status(500).send('Download failed');
     }
 });
 
