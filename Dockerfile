@@ -1,17 +1,18 @@
-# Use the official Node.js image
-FROM node:18-slim
+# Use official Node.js image
+FROM node:18-alpine
 
-# Create and change to the app directory
+# Set working directory
 WORKDIR /usr/src/app
 
-# Copy application dependency manifests to the container image.
+# Copy package files and install dependencies
 COPY package*.json ./
+RUN npm install --production
 
-# Install production dependencies.
-RUN npm install --only=production
-
-# Copy local code to the container image.
+# Copy the rest of the application code
 COPY . .
 
-# Run the web service on container startup.
-CMD [ "node", "server.js" ]
+# Expose the port the app runs on
+EXPOSE 3000
+
+# Start the application
+CMD ["npm", "start"]
