@@ -1,135 +1,82 @@
-// server.js
-require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
-const { Storage } = require('@google-cloud/storage');
+const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const cors = require('cors');
+const axios = require('axios'); // For easy streaming of the download
+require('dotenv').config();
 
 const app = express();
+const port = process.env.PORT || 3000;
 
-// 1. Security: Only allow your specific sites to talk to this server
-const allowedOrigins = [
-  'https://lenscape-studio.netlify.app',
-  'https://lenscape-studio-premier-freelance-agency-946105902514.us-west1.run.app',
-  'http://localhost:5173' // For local testing
-];
+app.use(cors());
+app.use(express.json());
 
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
+const s3Client = new S3Client({
+    region: process.env.AWS_REGION,
+    credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
     }
-  }
-}));
-
-// 2. Setup Google Cloud Storage
-// We will pass the JSON key content via an Environment Variable for security
-let storageOptions = {
-    projectId: 'my-file-cdn', // Your Project ID
-};
-
-if (process.env.GCLOUD_CREDENTIALS) {
-    // If running in cloud, read credentials from Env Var
-    storageOptions.credentials = JSON.parse(process.env.GCLOUD_CREDENTIALS);
-} else {
-    // If running locally, look for the file
-    storageOptions.keyFilename = './service-account-key.json';
-}
-
-const storage = new Storage(storageOptions);
-const bucketName = 'lenscape-studio'; 
-const bucket = storage.bucket(bucketName);
-
-// 3. Setup Multer (Handling file upload in memory)
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // Limit to 10MB
 });
 
-// 4. The Upload Endpoint
-app.post('/upload', upload.single('image'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).send('No file uploaded.');
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
+
+// --- UPLOAD ENDPOINT ---
+app.post('/upload', upload.single('file'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+        const fileName = `${Date.now()}_${req.file.originalname}`;
+        const bucketName = process.env.AWS_BUCKET_NAME;
+
+        const uploadParams = {
+            Bucket: bucketName,
+            Key: fileName,
+            Body: req.file.buffer,
+            ContentType: req.file.mimetype
+        };
+
+        await s3Client.send(new PutObjectCommand(uploadParams));
+
+        const publicUrl = `https://${bucketName}.s3.${process.env.AWS_REGION}.amazonaws.com/${fileName}`;
+
+        res.status(200).json({
+            message: 'Uploaded to S3',
+            url: publicUrl,
+            fileName: fileName
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
-
-    console.log(`Starting upload for: ${req.file.originalname}`);
-
-    // Create a unique filename
-    const filename = `uploads/${Date.now()}_${req.file.originalname.replace(/\s+/g, '_')}`;
-    const blob = bucket.file(filename);
-
-    const blobStream = blob.createWriteStream({
-      resumable: false,
-      contentType: req.file.mimetype,
-    });
-
-    blobStream.on('error', (err) => {
-      console.error('Upload error:', err);
-      res.status(500).send(err.message);
-    });
-
-    blobStream.on('finish', () => {
-      // Construct the public URL
-      // Ensure your bucket has "Storage Object Viewer" permissions for "allUsers"
-      const publicUrl = `https://storage.googleapis.com/${bucketName}/${filename}`;
-      
-      console.log(`Upload complete: ${publicUrl}`);
-      
-      // Return the URL to your frontend
-      res.status(200).json({ 
-        message: 'Upload successful', 
-        url: publicUrl 
-      });
-    });
-
-    blobStream.end(req.file.buffer);
-
-  } catch (error) {
-    console.error('Server error:', error);
-    res.status(500).send(error.message);
-  }
 });
 
-// ... existing imports and upload code ...
-
-// NEW: Download Endpoint
+// --- DOWNLOAD/PROXY ENDPOINT ---
+// Your site sends: /download?url=https://movieoo.s3...
 app.get('/download', async (req, res) => {
-  try {
-    const filePath = req.query.path; // Frontend sends: "uploads/filename.png"
+    try {
+        const fileUrl = req.query.url;
+        if (!fileUrl) return res.status(400).send('URL is required');
 
-    if (!filePath) {
-      return res.status(400).send('File path is required');
+        // Extract filename from URL for the download header
+        const fileName = fileUrl.split('/').pop();
+
+        const response = await axios({
+            url: fileUrl,
+            method: 'GET',
+            responseType: 'stream'
+        });
+
+        // Set headers so the browser downloads the file instead of playing/opening it
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        res.setHeader('Content-Type', response.headers['content-type']);
+
+        // Pipe the S3 data directly to the user
+        response.data.pipe(res);
+    } catch (error) {
+        console.error('Download error:', error.message);
+        res.status(500).send('Error downloading file');
     }
-
-    const file = bucket.file(filePath);
-    const [exists] = await file.exists();
-
-    if (!exists) {
-      return res.status(404).send('File not found');
-    }
-
-    // This header tells the browser: "Don't open this, DOWNLOAD it"
-    // We extract just the filename (e.g., image.png) from the full path
-    const fileName = filePath.split('/').pop(); 
-    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-    
-    // Pipe the file directly from Google Cloud to the user
-    file.createReadStream().pipe(res);
-
-  } catch (error) {
-    console.error('Download error:', error);
-    res.status(500).send('Error downloading file');
-  }
 });
 
-// app.listen(...)
-
-// Cloud Run requires listening on process.env.PORT
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
-
-});
+app.listen(port, () => console.log(`Server running on port ${port}`));
