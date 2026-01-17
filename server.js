@@ -5,21 +5,20 @@ const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const path = require('path');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // Infrastructure Configuration
 const AWS_CONFIG = {
-  region: 'eu-north-1',
-  bucket: 'movieoo',
-  credentials: {
-    accessKeyId: 'AKIAVRLYUWE74MLT4FFI',
-    secretAccessKey: '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'
-  }
+  region: process.env.AWS_REGION,
+  bucket: process.env.AWS_BUCKET
 };
 
 const s3Client = new S3Client({
   region: AWS_CONFIG.region,
-  credentials: AWS_CONFIG.credentials
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+  }
 });
 
 // Multer configured for memory storage
@@ -34,7 +33,10 @@ app.use(express.json());
 
 // Heartbeat
 app.get('/', (req, res) => {
-  res.json({ status: "Lenscape S3 Node Operational", region: AWS_CONFIG.region });
+  res.json({ 
+    status: "Lenscape S3 Node Operational", 
+    region: AWS_CONFIG.region 
+  });
 });
 
 /**
@@ -55,7 +57,7 @@ app.post('/upload', upload.single('image'), async (req, res) => {
       Key: fileName,
       Body: req.file.buffer,
       ContentType: req.file.mimetype,
-      ACL: 'public-read' // Assumes your bucket allows public ACLs
+      ACL: 'public-read'
     };
 
     await s3Client.send(new PutObjectCommand(uploadParams));
@@ -67,7 +69,10 @@ app.post('/upload', upload.single('image'), async (req, res) => {
 
   } catch (error) {
     console.error('[S3-ERROR]', error);
-    res.status(500).json({ error: 'Infrastructure Sync Failed', details: error.message });
+    res.status(500).json({ 
+      error: 'Infrastructure Sync Failed', 
+      details: error.message 
+    });
   }
 });
 
@@ -80,9 +85,6 @@ app.get('/download', (req, res) => {
   if (!filePath) return res.status(400).send('Missing path parameter.');
 
   const s3Url = `https://${AWS_CONFIG.bucket}.s3.${AWS_CONFIG.region}.amazonaws.com/${filePath}`;
-  
-  // Since objects are 100% public, we can simply redirect to the S3 URL
-  // The browser will handle the download if the path is visited
   res.redirect(s3Url);
 });
 
